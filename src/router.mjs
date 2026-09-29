@@ -75,7 +75,7 @@ export function render(c) {
     const contract = read(path.join(ROOT, 'roles', `${role}.md`));
     const nativePath = `agents/task-routing/${role}.toml`;
     profile.agents[`tr_${role}`] = { description: meta.description, config_file: nativePath };
-    files.set(nativePath, stringify({ ...nativeModel(settings), sandbox_mode: meta.sandbox, developer_instructions: contract }));
+    files.set(nativePath, stringify({ name: `tr_${role}`, description: meta.description, ...nativeModel(settings), sandbox_mode: meta.sandbox, developer_instructions: contract }));
     files.set(`skills/task-routing/references/roles/${role}.md`, contract);
     rows.push(`| ${role} | tr_${role} | ${settings.model} | ${settings.effort} | ${settings.provider || 'inherit active provider'} | [contract](roles/${role}.md) |`);
   }

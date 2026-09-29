@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { stringify, parse } from 'smol-toml';
 import { ROOT, loadConfig, render } from '../src/router.mjs';
 
-// Read-only native configuration parsing. No model requests, profile installation,
-// feature enablement, or user-config writes are performed by `features list`.
+// Validate configuration and discovery via an ephemeral app-server thread.
+// No turn is submitted, so this check performs no model inference.
 const binary = process.argv[2] || 'codex';
 const files = render(loadConfig(path.join(ROOT, 'routing.toml')));
 for (const [relative, expected] of files) {
@@ -31,7 +32,11 @@ function flatten(table, prefix = '') {
 
 const layers = [['profile', profile], ...Object.keys(profile.agents).filter(k => k.startsWith('tr_')).map(k => {
   const filename = profile.agents[k].config_file;
-  return [k, { ...profile, ...parse(fs.readFileSync(filename, 'utf8')) }];
+  const { name, description, nickname_candidates, ...layer } = parse(fs.readFileSync(filename, 'utf8'));
+  if (name !== k || typeof description !== 'string' || !description.trim()) {
+    throw new Error(`${filename}: discovery requires a matching name and non-empty description`);
+  }
+  return [k, { ...profile, ...layer }];
 })];
 for (const [name, config] of layers) {
   const result = spawnSync(binary, [...flatten(config), 'features', 'list'], { encoding: 'utf8', timeout: 15000 });
@@ -41,3 +46,50 @@ for (const [name, config] of layers) {
   }
   console.log(`Native config accepted: ${name}`);
 }
+
+const startup = await new Promise((resolve, reject) => {
+  const child = spawn(binary, [...flatten(profile), 'app-server', '--stdio'], {
+    cwd: ROOT, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+  });
+  const warnings = [];
+  let stderr = '', result, failure, finishing = false;
+  const lines = createInterface({ input: child.stdout });
+  const finish = error => {
+    if (finishing) return;
+    finishing = true;
+    failure = error;
+    child.stdin.end();
+    if (child.exitCode === null) child.kill();
+  };
+  const timeout = setTimeout(() => finish(new Error('App-server startup check timed out')), 20000);
+  const send = value => child.stdin.write(JSON.stringify(value) + '\n');
+  child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-32768); });
+  child.stdin.on('error', error => { if (!finishing) finish(error); });
+  child.on('error', finish);
+  child.on('close', () => {
+    clearTimeout(timeout);
+    lines.close();
+    if (failure) return reject(failure);
+    if (!result) return reject(new Error(`App-server exited before thread startup: ${stderr}`));
+    if (warnings.length || /Ignoring malformed agent role definition/i.test(stderr)) {
+      return reject(new Error(`Agent discovery failed: ${warnings.join('\n') || stderr}`));
+    }
+    resolve(result);
+  });
+  lines.on('line', line => {
+    let message;
+    try { message = JSON.parse(line); } catch { return; }
+    if (message.error) return finish(new Error(JSON.stringify(message.error)));
+    if (/Ignoring malformed agent role definition/i.test(JSON.stringify(message))) warnings.push(JSON.stringify(message.params));
+    if (message.id === 1) {
+      send({ method: 'initialized', params: {} });
+      send({ id: 2, method: 'thread/start', params: { cwd: ROOT, ephemeral: true } });
+    } else if (message.id === 2) {
+      result = message.result;
+      // A read-only request drains earlier startup notifications before shutdown.
+      send({ id: 3, method: 'config/read', params: { includeLayers: false } });
+    } else if (message.id === 3) finish();
+  });
+  send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'task-router-check', version: '0.1.0' }, capabilities: { experimentalApi: true } } });
+});
+console.log(`Agent discovery startup passed: ${startup.model} (${startup.modelProvider}); no model turn submitted.`);

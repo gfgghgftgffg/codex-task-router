@@ -50,6 +50,23 @@ test('changing the coding model leaves every other role configuration unchanged'
   assert.notEqual(before.get('agents/task-routing/coding.toml'), after.get('agents/task-routing/coding.toml'));
 });
 
+test('role files are self-describing for discovery without a profile name hint', () => {
+  const files = render(defaultConfig());
+  const profile = parse([...files.entries()].find(([p]) => p.endsWith('.config.toml'))[1]);
+  const names = new Set();
+  for (const [registeredName, declaration] of Object.entries(profile.agents)) {
+    if (!registeredName.startsWith('tr_')) continue;
+    const role = parse(files.get(declaration.config_file));
+    assert.equal(role.name, registeredName, 'discovery and explicit registration must identify the same role');
+    assert.equal(typeof role.description, 'string');
+    assert.ok(role.description.trim(), 'discovery requires a description in the file itself');
+    assert.ok(role.developer_instructions.trim());
+    assert.equal(names.has(role.name), false, 'discovered role names must be unique');
+    names.add(role.name);
+  }
+  assert.equal(names.size, 5);
+});
+
 test('configuration rejects misspelled roles, absent efforts and escaping profile names', t => {
   const dir = fixture(t);
   for (const mutate of [c => { c.roles.seach = c.roles.search; }, c => { delete c.roles.coding.effort; }, c => { c.profile = '../escape'; }]) {
