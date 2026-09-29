@@ -4,11 +4,34 @@
 
 默认由 Astra 主 Agent 把握方向，DeepSeek Flash 编码，Sol 检索、独立验证和处理非编码产出。模型都是可替换的配置值，不与某个服务商绑定。
 
-**状态：本地配置、安装保护和静态场景检查已验证；尚未进行真实多模型调用或质量、成本基准测试。** 本项目提供编排政策和配置生成器，不提供模型服务，也不声称硬性拦截所有工具调用。
+**状态：22 项自动测试通过；本机已验证原生 V1 下的 DeepSeek 任务收发、编码和独立 Sol 验证流程。** 质量、成本收益和不同宿主上的一致性尚未做基准测试。本项目提供编排政策和配置生成器，不提供模型服务，也不声称硬性拦截所有工具调用。
+
+## 必需配置：使用 V1 子 Agent 通讯
+
+使用本项目时，必须启用多 Agent 并关闭 MultiAgentV2。将以下配置合并到 `~/.codex/config.toml` 已有的 `[features]` 表中：
+
+```toml
+[features]
+multi_agent = true
+multi_agent_v2 = false
+```
+
+如果使用 `model_catalog_json` 指定模型 JSON，模型条目也必须设置 `"multi_agent_version": "v1"`，包括主 Agent 和所有可能选用的子模型。下面是单个模型条目的相关字段示例，请保留该条目的其他字段：
+
+```json
+{
+  "slug": "gpt-6-astra",
+  "multi_agent_version": "v1"
+}
+```
+
+在已验证的 Codex CLI 0.159 中，仅设置 `multi_agent_v2 = false` 不足以覆盖模型目录中明确的 `"multi_agent_version": "v2"`。两处都需要检查，修改后必须启动新会话；已有会话不会自动切换通讯方式。
+
+本项目安装器不会自动改写这些全局功能开关或模型 JSON。原生 V1 的普通任务消息已在本机通过 DeepSeek 收发验证；其他版本、provider 和宿主仍需分别验证。
 
 ## 快速开始
 
-需要 Node.js 22+、支持命名 subagent 角色及独立 profile 的 Codex，以及已配置的模型 provider。原生配置在 Codex CLI 0.156.1 上做过解析验证；其他版本和桌面宿主需要确认兼容性。
+需要 Node.js 22+、支持命名 subagent 角色及独立 profile 的 Codex，以及已配置的模型 provider。原生配置在 Codex CLI 0.156.1 上做过解析验证；Codex CLI 0.159 的 profile 指令语义见下文“profile 指令替换与 base 快照”。其他版本和桌面宿主需要确认兼容性。
 
 克隆或下载本仓库后，在项目目录执行：
 
@@ -33,7 +56,16 @@ node cli.mjs install --apply
 codex -p task-routing
 ```
 
-**安装到全局目录不等于所有会话自动启用。** 通过 `-p task-routing` 加载路由 profile；入口也支持显式调用 `$task-routing`，但这不能让未加载的角色、模型或工具自动变得可用，也不能改变当前主会话模型。
+**安装到全局目录不等于所有会话自动启用。** 通过 `codex -p task-routing` 加载路由 profile；普通 `codex` 启动不加载它，仍按原有工作方式运行。入口也支持在未加载 profile 的会话中显式调用 `$task-routing`，但这只让当前会话按 Skill 政策工作，不能让未加载的角色、模型或工具自动变得可用，也不能改变当前主会话模型。安装或修改 profile、角色、Skill 后需要重启 Codex（启动新会话）才会重新加载。
+
+### profile 指令替换与 base 快照
+
+在 Codex CLI 0.159 中，profile 里的 `developer_instructions` 会替换基础配置里的同名文本，而不会自动合并（依据 [Codex 配置参考](https://developers.openai.com/codex/config-reference/) 与 [0.159 的 `config/mod.rs`](https://raw.githubusercontent.com/openai/codex/rust-v0.159.0/codex-rs/core/src/config/mod.rs)）。因此 `install --apply` 会把安装那一刻 `config.toml` 中的 `developer_instructions` 原样快照进 `<profile>.config.toml`，再接上本项目的激活说明；`config.toml` 本身从不改写，字节保持不变。
+
+- 基础文本被修改或删除后，重新执行 `install --apply` 会刷新快照；没有其他变化时计划为空，重复安装是幂等的。
+- 预览之后、应用之前，只要基础 `config.toml` 或任何托管文件的存在性或内容发生变化（即使计划本身零变更），应用都会被拒绝为失效计划。
+- `npm run build` 产出可移植 bundle，只含激活说明，不包含你的基础指令、凭据或本机配置内容。
+- 该替换语义已在 Codex CLI 0.159 上验证；其他版本和宿主需要另行确认。
 
 ## 配置模型和思考强度
 
@@ -71,6 +103,10 @@ effort = "medium"
 
 这是明确的编排规则，实际执行依赖宿主是否允许每次 spawn 覆盖模型和强度。如果不能保留角色权限或不能调用指定模型，应报告限制，不能假装覆盖成功或静默使用默认值。当前没有独立的运行时拦截器来强制这一行为。
 
+### 政策和强制执行
+
+本工具产出的是政策文本和原生配置，不是运行时拦截器。`<profile>.config.toml` 只在加载该 profile 时提供激活说明和角色注册；角色的模型、思考强度和 sandbox 由宿主在 spawn 时执行；能否按角色覆盖模型、某个模型是否真的可调用，取决于宿主能力和 provider。`doctor` 只做静态配置与模型目录检查，不证明服务可达、凭据有效或子代理真的可用。安装不修改全局默认权限，也不能阻止其他会话或工具绕过路由政策。
+
 ## 怎样分工
 
 普通任务只使用必要的角色，不经过固定的全角色流水线：
@@ -100,7 +136,7 @@ search 保持只读，通过链接、现有文件或分批回传原文交接。�
 | `.task-router/manifest.json` | 记录本项目托管文件，用于检查后续更新 |
 | `.task-router/backups/` | 更新已有文件前保存备份 |
 
-已有 `config.toml`、认证、其他 Skills、其他角色文件和 AGENTS.md 标记之外的内容不会被改写。文件冲突或手工改过的托管角色会阻止覆盖；AGENTS.md 的本项目区块会随生成器更新，因此持久自定义规则应放在区块外。
+已有 `config.toml`、认证、其他 Skills、其他角色文件和 AGENTS.md 标记之外的内容不会被改写。安装只读取 `config.toml` 中的 `developer_instructions` 作为快照来源，不改写该文件。文件冲突或手工改过的托管角色会阻止覆盖；AGENTS.md 的本项目区块会随生成器更新，因此持久自定义规则应放在区块外。
 
 安装器保留现有指令文本，但不会替用户分析或修复其中的语义冲突。已有“全部自行完成”“每阶段必须确认”等旧规则可能与路由政策冲突，需要单独审查。AGENTS.override.md 或其他宿主配置也可能影响入口加载。
 
@@ -132,7 +168,7 @@ node cli.mjs install
 node cli.mjs install --apply
 ```
 
-启动新会话重新加载。`install` 直接从源文件生成，不要求先构建；构建用于检查独立发布产物。避免手工编辑安装后的生成文件。已安装后不要直接重命名 profile；使用不同目标目录，否则安装器会拒绝留下旧托管文件。
+启动新会话重新加载。`install` 直接从源文件生成，不要求先构建；构建用于检查独立发布产物。避免手工编辑安装后的生成文件。已安装后不要直接重命名 profile；使用不同目标目录，否则安装器会拒绝留下旧托管文件。修改了基础 `config.toml` 的 `developer_instructions` 后，需要重跑 `install --apply` 刷新 profile 中的快照（Codex CLI 0.159 的替换语义见上文，其他版本需自行确认）。
 
 不加载 profile 且不显式调用 Skill 时，入口要求维持原工作方式。全局安装的 Skill 仍可被宿主发现；停用 profile 不会删除安装文件。当前没有自动卸载命令，删除时应只移除本项目文件和 AGENTS.md 中 `codex-task-router:start/end` 标记之间的区块，保留用户其余内容。
 
@@ -154,11 +190,11 @@ npm run build
 | `routing.toml` | 用户可修改的默认角色配置 |
 | `roles/*.md` | 子 Agent 的职责和交付契约 |
 | `skill/` | 编排入口及按需加载的参考文件 |
-| `src/router.mjs` | 配置校验、生成、安装保护；全局 AGENTS.md 的生成来源 |
+| `src/router.mjs` | 配置校验、激活说明与 profile 生成、base 快照、安装保护；全局 AGENTS.md 的生成来源 |
 | `cli.mjs` | build、doctor、install 命令 |
-| `test/` | 配置映射、引用完整性、安装预览、更新、备份与路径保护测试 |
+| `test/` | 配置映射、引用完整性、base 快照刷新、失效计划拒绝、安装预览、更新、备份与路径保护测试 |
 
-现有验证包含 16 项自动测试、Codex CLI 0.156.1 原生配置解析及角色发现启动检查、skill-creator 校验和部分独立场景审查。真实模型调用、不同宿主上的调度一致性以及质量/成本收益尚未验证。
+现有验证包含 22 项自动测试（配置生成、自定义 profile 名、base 快照、失效计划拒绝、安装保护、路径保护、CLI 预览与构建）、原生配置解析及角色发现启动检查，以及本机 Codex CLI 0.159 下的 V1 任务收发、DeepSeek 编码和独立 Sol 验证。模型质量、成本收益及不同宿主上的调度一致性尚未做基准测试。
 
 ## 发布与参考
 

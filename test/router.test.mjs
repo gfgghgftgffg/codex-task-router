@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parse, stringify } from 'smol-toml';
-import { ROOT, ROLE_META, loadConfig, render, inspectCatalog, mergeAgents, planInstall, applyInstall } from '../src/router.mjs';
+import { ROOT, ROLE_META, loadConfig, render, inspectCatalog, mergeAgents, planInstall, applyInstall, activationInstructions, readBaseInstructions } from '../src/router.mjs';
 
 const defaultConfig = () => loadConfig(path.join(ROOT, 'routing.toml'));
 function fixture(t) {
@@ -18,6 +18,10 @@ function put(root, relative, content) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, content);
   return p;
+}
+function installPlan(c, home) {
+  const base = readBaseInstructions(home);
+  return { base, changes: planInstall(render(c, { baseInstructions: base.text }), home, { base }) };
 }
 
 test('all independently configured models, efforts and providers reach native role layers', () => {
@@ -196,4 +200,124 @@ test('CLI build produces a parseable profile and CLI install defaults to preview
   assert.equal(preview.status, 0, preview.stderr);
   assert.match(preview.stdout, /Preview only/);
   assert.equal(fs.existsSync(home), false);
+});
+
+test('activation lives only in the generated profile and follows custom profile names', t => {
+  const c = defaultConfig();
+  c.profile = 'team-routing';
+  const files = render(c);
+  const activation = activationInstructions('team-routing');
+  assert.equal(files.has('team-routing.config.toml'), true);
+  assert.equal(files.has('task-routing.config.toml'), false);
+  assert.equal(files.has('config.toml'), false);
+  assert.equal(parse(files.get('team-routing.config.toml')).developer_instructions, activation);
+  for (const [relative, content] of files) {
+    if (relative === 'team-routing.config.toml') continue;
+    assert.equal(content.includes(activation), false, `activation leaked into ${relative}`);
+  }
+  const agents = files.get('AGENTS.md');
+  assert.ok(agents.includes('<!-- codex-task-router:start -->'));
+  assert.ok(agents.includes('When the task-routing profile is active or the user invokes $task-routing'));
+  assert.ok(agents.includes('Otherwise keep the existing workflow.'));
+  const dir = fixture(t);
+  applyInstall(installPlan(c, dir).changes, dir);
+  assert.equal(fs.existsSync(path.join(dir, 'task-routing.config.toml')), false);
+  assert.equal(parse(fs.readFileSync(path.join(dir, 'team-routing.config.toml'), 'utf8')).developer_instructions, activation);
+});
+
+test('child role contracts stay byte-identical to the source and never carry the parent activation', () => {
+  const c = defaultConfig();
+  const plain = render(c), composed = render(c, { baseInstructions: 'Base developer text.' });
+  const activation = activationInstructions(c.profile);
+  for (const role of Object.keys(ROLE_META)) {
+    const relative = `agents/task-routing/${role}.toml`;
+    assert.equal(plain.get(relative), composed.get(relative));
+    const contract = parse(plain.get(relative)).developer_instructions;
+    assert.equal(contract, fs.readFileSync(path.join(ROOT, 'roles', `${role}.md`), 'utf8'));
+    assert.equal(plain.get(`skills/task-routing/references/roles/${role}.md`), contract);
+    assert.equal(contract.includes(activation), false);
+    assert.equal(contract.includes('Base developer text.'), false);
+  }
+  assert.notEqual(plain.get('task-routing.config.toml'), composed.get('task-routing.config.toml'));
+});
+
+test('install snapshots base developer instructions, preserves config.toml bytes and stays idempotent', t => {
+  const dir = fixture(t), c = defaultConfig();
+  const baseText = '# provider settings stay untouched\nmodel = "previous"\ndeveloper_instructions = "Keep these base instructions."\n';
+  put(dir, 'config.toml', baseText);
+  const first = installPlan(c, dir);
+  assert.equal(first.base.text, 'Keep these base instructions.');
+  assert.equal(first.changes.some(change => change.relative === 'config.toml'), false);
+  applyInstall(first.changes, dir);
+  assert.equal(fs.readFileSync(path.join(dir, 'config.toml'), 'utf8'), baseText);
+  const installed = parse(fs.readFileSync(path.join(dir, 'task-routing.config.toml'), 'utf8')).developer_instructions;
+  assert.equal(installed, `Keep these base instructions.\n\n${activationInstructions(c.profile)}`);
+  assert.equal(installPlan(c, dir).changes.length, 0);
+  assert.equal(parse(render(c).get('task-routing.config.toml')).developer_instructions, activationInstructions(c.profile));
+});
+
+test('reinstall refreshes changed and removed base developer instructions', t => {
+  const dir = fixture(t), c = defaultConfig(), profilePath = path.join(dir, 'task-routing.config.toml');
+  const activation = activationInstructions(c.profile);
+  const firstBase = '# keep this comment\nmodel = "previous"\ndeveloper_instructions = "First base text."\n';
+  put(dir, 'config.toml', firstBase);
+  applyInstall(installPlan(c, dir).changes, dir);
+  assert.equal(parse(fs.readFileSync(profilePath, 'utf8')).developer_instructions, `First base text.\n\n${activation}`);
+  assert.equal(fs.readFileSync(path.join(dir, 'config.toml'), 'utf8'), firstBase);
+  const secondBase = 'model = "previous"\ndeveloper_instructions = "Second base text."\n';
+  put(dir, 'config.toml', secondBase);
+  const refreshed = installPlan(c, dir);
+  assert.deepEqual(refreshed.changes.map(change => change.relative).sort(), ['.task-router/manifest.json', 'task-routing.config.toml']);
+  applyInstall(refreshed.changes, dir);
+  const second = parse(fs.readFileSync(profilePath, 'utf8')).developer_instructions;
+  assert.equal(second, `Second base text.\n\n${activation}`);
+  assert.equal(second.includes('First base text.'), false);
+  assert.equal(fs.readFileSync(path.join(dir, 'config.toml'), 'utf8'), secondBase);
+  const removedBase = 'model = "previous"\n';
+  put(dir, 'config.toml', removedBase);
+  applyInstall(installPlan(c, dir).changes, dir);
+  assert.equal(parse(fs.readFileSync(profilePath, 'utf8')).developer_instructions, activation);
+  assert.equal(fs.readFileSync(path.join(dir, 'config.toml'), 'utf8'), removedBase);
+});
+
+test('stale plans are rejected after base or managed file changes, even when nothing needs writing', t => {
+  const dir = fixture(t), c = defaultConfig(), activation = activationInstructions(c.profile);
+  const baseLine = 'developer_instructions = "Base text."\n';
+  put(dir, 'config.toml', baseLine);
+  applyInstall(installPlan(c, dir).changes, dir);
+  const settled = installPlan(c, dir).changes;
+  assert.equal(settled.length, 0);
+  // The base config is guarded even when the plan would write nothing.
+  put(dir, 'config.toml', 'developer_instructions = "Changed after planning."\n');
+  assert.throws(() => applyInstall(settled, dir), /Base config changed after planning/);
+  put(dir, 'config.toml', baseLine);
+  const restored = installPlan(c, dir).changes;
+  assert.equal(restored.length, 0);
+  // A managed file edited after planning is stale even when the plan writes nothing.
+  fs.appendFileSync(path.join(dir, 'AGENTS.md'), '\nEdited after planning.\n');
+  assert.throws(() => applyInstall(restored, dir), /changed after planning/);
+  applyInstall(installPlan(c, dir).changes, dir);
+  assert.equal(installPlan(c, dir).changes.length, 0);
+  // A plan with pending writes is rejected after a later base change and writes nothing.
+  put(dir, 'config.toml', 'developer_instructions = "Next base text."\n');
+  const pending = installPlan(c, dir).changes;
+  assert.ok(pending.some(change => change.relative === 'task-routing.config.toml'));
+  put(dir, 'config.toml', 'developer_instructions = "Changed again after planning."\n');
+  assert.throws(() => applyInstall(pending, dir), /Base config changed after planning/);
+  assert.equal(parse(fs.readFileSync(path.join(dir, 'task-routing.config.toml'), 'utf8')).developer_instructions, `Base text.\n\n${activation}`);
+});
+
+test('portable build never carries base developer instructions while install snapshots them', t => {
+  const dir = fixture(t), out = path.join(dir, 'bundle'), home = path.join(dir, 'home');
+  const baseText = 'developer_instructions = "Private base instructions."\n';
+  put(home, 'config.toml', baseText);
+  const build = spawnSync(process.execPath, [path.join(ROOT, 'cli.mjs'), 'build', '--out', out], { encoding: 'utf8' });
+  assert.equal(build.status, 0, build.stderr);
+  const bundleProfile = parse(fs.readFileSync(path.join(out, 'task-routing.config.toml'), 'utf8'));
+  assert.equal(bundleProfile.developer_instructions, activationInstructions('task-routing'));
+  const install = spawnSync(process.execPath, [path.join(ROOT, 'cli.mjs'), 'install', '--codex-home', home, '--apply'], { encoding: 'utf8' });
+  assert.equal(install.status, 0, install.stderr);
+  const installed = parse(fs.readFileSync(path.join(home, 'task-routing.config.toml'), 'utf8')).developer_instructions;
+  assert.equal(installed, `Private base instructions.\n\n${activationInstructions('task-routing')}`);
+  assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), baseText);
 });

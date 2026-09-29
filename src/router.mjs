@@ -20,6 +20,29 @@ const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const read = p => fs.readFileSync(p, 'utf8');
 export const defaultCodexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 
+export function activationInstructions(profile) {
+  return [
+    `The task-routing profile "${profile}" is active.`,
+    'Before implementing or delegating, the parent reads the installed task-routing skill (skills/task-routing/SKILL.md under CODEX_HOME) and follows its generated role map.',
+    'Route every code change, including small fixes, to the configured coding role and actually invoke it; every completed coding work unit needs an independent verify verdict.',
+    'Assigned children stay inside their brief and do not start routing workflows of their own.',
+    'User instructions and host permissions take precedence.',
+  ].join(' ');
+}
+
+export function readBaseInstructions(codexHome) {
+  const target = safeTarget(codexHome, 'config.toml');
+  if (!fs.existsSync(target)) return { target, content: undefined, text: '' };
+  const content = read(target);
+  let parsed;
+  try {
+    parsed = parse(content.replace(/^\uFEFF/, ''));
+  } catch (error) {
+    throw new Error(`Cannot parse ${target}: ${error.message}`);
+  }
+  return { target, content, text: typeof parsed.developer_instructions === 'string' ? parsed.developer_instructions : '' };
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -58,10 +81,13 @@ function nativeModel(settings) {
   };
 }
 
-export function render(c) {
+export function render(c, options = {}) {
   const files = new Map();
+  const activation = activationInstructions(c.profile);
+  const base = typeof options.baseInstructions === 'string' ? options.baseInstructions : '';
   const profile = {
     ...nativeModel(c.orchestrator),
+    developer_instructions: base ? base + (base.endsWith('\n') ? '\n' : '\n\n') + activation : activation,
     agents: {
       enabled: true,
       max_concurrent_threads_per_session: c.max_concurrent,
@@ -174,8 +200,12 @@ function writeAtomic(target, content) {
   }
 }
 
-export function planInstall(files, home) {
+export function planInstall(files, home, options = {}) {
   const manifestPath = safeTarget(home, MANIFEST);
+  const base = options.base ?? readBaseInstructions(home);
+  // The base config and every managed target are captured as preimages, so a plan
+  // that would write nothing is still rejected once anything it read has changed.
+  const guards = [{ target: base.target, old: base.content, label: 'Base config' }];
   let previous = { version: 1, files: {} };
   if (fs.existsSync(manifestPath)) {
     previous = JSON.parse(read(manifestPath));
@@ -187,6 +217,7 @@ export function planInstall(files, home) {
     const target = safeTarget(home, relative);
     const exists = fs.existsSync(target);
     const old = exists ? read(target) : undefined;
+    guards.push({ target, old, label: 'Managed file' });
     let content = generated;
     if (relative === 'AGENTS.md') content = mergeAgents(old || '', generated);
     else if (exists && old !== generated) {
@@ -200,11 +231,17 @@ export function planInstall(files, home) {
   }
   const manifest = JSON.stringify({ version: 1, files: hashes }, null, 2) + '\n';
   const oldManifest = fs.existsSync(manifestPath) ? read(manifestPath) : undefined;
+  guards.push({ target: manifestPath, old: oldManifest, label: 'Managed file' });
   if (manifest !== oldManifest) changes.push({ relative: MANIFEST, target: manifestPath, content: manifest, old: oldManifest });
+  Object.defineProperty(changes, 'guards', { value: guards });
   return changes;
 }
 
 export function applyInstall(changes, home) {
+  for (const guard of changes.guards ?? []) {
+    const actual = fs.existsSync(guard.target) ? read(guard.target) : undefined;
+    assert(actual === guard.old, `${guard.label} changed after planning: ${guard.target}`);
+  }
   if (!changes.length) return { written: 0, backup: null };
   // Verify every preimage before writing, so a stale plan never overwrites newer edits.
   for (const change of changes) {

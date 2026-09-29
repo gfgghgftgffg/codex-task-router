@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { ROOT, loadConfig, render, inspectCatalog, defaultCodexHome, planInstall, applyInstall } from './src/router.mjs';
+import { ROOT, loadConfig, render, inspectCatalog, readBaseInstructions, defaultCodexHome, planInstall, applyInstall } from './src/router.mjs';
 
 const HELP = `Codex task router (Node.js 22+)
 
@@ -43,7 +43,8 @@ try {
     const report = inspectCatalog(c, home, values.catalog);
     if (report.errors.length) throw new Error(report.errors.join('\n'));
     for (const message of report.warnings) console.log(`UNVERIFIED: ${message}`);
-    const changes = planInstall(render(c), home);
+    const base = readBaseInstructions(home);
+    const changes = planInstall(render(c, { baseInstructions: base.text }), home, { base });
     console.log(`Target: ${home}`);
     for (const change of changes) console.log(`${change.old === undefined ? 'CREATE' : 'UPDATE'} ${change.relative}`);
     if (!changes.length) console.log('Already up to date.');
