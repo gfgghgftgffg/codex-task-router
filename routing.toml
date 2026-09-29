@@ -1,0 +1,30 @@
+version = 1
+profile = "task-routing"
+max_concurrent = 3
+max_coding_repairs = 2
+
+# Model IDs and effort values belong to your provider. They are not hardcoded.
+# Set provider = "provider-id" only when overriding the existing Codex provider.
+[orchestrator]
+model = "gpt-6-astra"
+effort = "medium"
+
+[roles.coding]
+model = "deepseek-flash"
+effort = "max"
+
+[roles.search]
+model = "gpt-6-sol"
+effort = "high"
+
+[roles.verify]
+model = "gpt-6-sol"
+effort = "medium"
+
+[roles.reasoning]
+model = "gpt-6-astra"
+effort = "xhigh"
+
+[roles.general]
+model = "gpt-6-sol"
+effort = "medium"

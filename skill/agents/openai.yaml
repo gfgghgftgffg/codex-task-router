@@ -1,0 +1,6 @@
+interface:
+  display_name: "Task Routing"
+  short_description: "Route work by role with configurable models"
+  default_prompt: "Use $task-routing to delegate this task with the configured model roles."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,15 @@
+{
+  "name": "codex-task-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Configurable task roles and model routing for Codex",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "node cli.mjs build",
+    "doctor": "node cli.mjs doctor",
+    "plan": "node cli.mjs install",
+    "test": "node --test"
+  },
+  "dependencies": { "smol-toml": "1.9.0" }
+}
