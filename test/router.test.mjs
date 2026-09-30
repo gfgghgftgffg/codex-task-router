@@ -163,6 +163,19 @@ test('directory links cannot redirect role installation', t => {
   assert.deepEqual(fs.readdirSync(other), []);
 });
 
+test('links above or at the target root are allowed', t => {
+  const parent = fixture(t), actual = fixture(t);
+  const alias = path.join(parent, 'alias');
+  fs.symlinkSync(actual, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const home = path.join(alias, 'home');
+  const result = applyInstall(planInstall(render(defaultConfig()), home), home);
+  assert.ok(result.written > 0);
+  assert.ok(fs.existsSync(path.join(actual, 'home', 'agents/task-routing/coding.toml')));
+  const rootResult = applyInstall(planInstall(new Map([['root-link-check', 'ok']]), alias), alias);
+  assert.ok(rootResult.written > 0);
+  assert.equal(fs.readFileSync(path.join(actual, 'root-link-check'), 'utf8'), 'ok');
+});
+
 test('doctor catches unavailable models and unsupported reasoning before installation', t => {
   const dir = fixture(t), c = defaultConfig();
   c.orchestrator = { model: 'gpt-6-astra', effort: 'medium' };
