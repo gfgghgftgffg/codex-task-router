@@ -176,16 +176,15 @@ export function mergeAgents(existing, block) {
 
 function safeTarget(root, relative) {
   assert(!path.isAbsolute(relative) && !relative.split(/[\\/]/).some(p => p === '..' || p === ''), `Unsafe managed path: ${relative}`);
-  const target = path.resolve(root, relative);
-  assert(target.startsWith(path.resolve(root) + path.sep), `Path escapes target: ${relative}`);
+  const resolvedRoot = path.resolve(root);
+  const target = path.resolve(resolvedRoot, relative);
+  assert(target.startsWith(resolvedRoot + path.sep), `Path escapes target: ${relative}`);
   let current = target;
-  while (true) {
+  while (current !== resolvedRoot) {
     let stat;
     try { stat = fs.lstatSync(current); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (stat) assert(!stat.isSymbolicLink(), `Refusing symlink/junction: ${current}`);
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
+    current = path.dirname(current);
   }
   return target;
 }
