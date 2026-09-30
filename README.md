@@ -93,8 +93,8 @@ effort = "medium"
 每项还可设置 `provider = "已配置的-provider-id"`，省略时继承主会话 provider。认证和服务地址保留在原有 Codex 配置中；本项目不保存 API 密钥。
 
 - 思考强度默认按配置固定，不会根据难度自动升档。`doctor` 根据有效模型目录检查支持的档位；没有目录时会明确提示未验证。不同 provider 的同名模型也可能支持不同档位。
-- `max_concurrent` 默认 3，只是并发上限，不要求每次创建 3 个子 Agent。
-- `max_coding_repairs` 默认 2，限制首次实现之后的编码修复跟进；耗尽后交回主 Agent 判断，不静默改用 GPT 编码。
+- `max_concurrent` 默认 30，只是并发上限，不要求每次创建 30 个子 Agent。
+- `max_coding_repairs` 默认 5，限制首次实现之后的编码修复跟进；耗尽后交回主 Agent 判断，不静默改用 GPT 编码。
 - 当前角色集合固定，但每个角色的模型、强度、provider 均可修改。新增角色需要扩展生成器和角色契约。
 
 ### 仅本次任务指定模型

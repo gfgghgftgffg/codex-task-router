@@ -1,7 +1,7 @@
 version = 1
 profile = "task-routing"
-max_concurrent = 3
-max_coding_repairs = 2
+max_concurrent = 30
+max_coding_repairs = 5
 
 # Model IDs and effort values belong to your provider. They are not hardcoded.
 # Set provider = "provider-id" only when overriding the existing Codex provider.
