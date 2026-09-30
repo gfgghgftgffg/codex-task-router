@@ -160,15 +160,31 @@ search 保持只读，通过链接、现有文件或分批回传原文交接。�
 
 ## 更新与停用
 
-修改 `routing.toml` 或本项目的角色/Skill 源文件后：
+### 每次修改模型后怎么更新
+
+修改本仓库的 [`routing.toml`](routing.toml)，调整 `orchestrator` 或 `roles.*` 的 `model`、`effort`，保存后在仓库目录执行以下命令。Windows、macOS、Linux 使用相同命令：
 
 ```sh
-node cli.mjs doctor
-node cli.mjs install
 node cli.mjs install --apply
 ```
 
-启动新会话重新加载。`install` 直接从源文件生成，不要求先构建；构建用于检查独立发布产物。避免手工编辑安装后的生成文件。已安装后不要直接重命名 profile；使用不同目标目录，否则安装器会拒绝留下旧托管文件。修改了基础 `config.toml` 的 `developer_instructions` 后，需要重跑 `install --apply` 刷新 profile 中的快照（Codex CLI 0.159 的替换语义见上文，其他版本需自行确认）。
+更新成功后，在要工作的项目目录启动新的 Codex 会话：
+
+```sh
+codex -p task-routing
+```
+
+`install --apply` 已包含模型目录校验，并同步生成 profile、角色配置和 Skill；不需要每次先运行 `doctor`、构建或重新安装 Codex。已有会话不会自动刷新配置。修改角色/Skill 源文件后也使用这个流程。
+
+- 需要单独诊断时执行 `node cli.mjs doctor`；只想预览文件变更时执行 `node cli.mjs install`。这两步都是可选的。
+- 模型 ID 和思考强度需要与有效模型目录匹配。仅更新 `codex-models.json` 不会改变路由分配，还需要修改 `routing.toml` 并执行上述同步命令。使用模型 JSON 时，新增模型也要满足上文的 V1 配置要求。
+- 默认读取当前这份仓库的 `routing.toml`，不会自动读取 `~/.codex/routing.toml`。有多份仓库时，请固定使用同一份。自定义源配置用 `--config <文件路径>`；首次安装使用了 `--codex-home <目录>` 的，更新时也要指定相同目录（或保持相同的 `CODEX_HOME`）。
+
+**生成文件中的额外设置：** 当前安装器按整个文件管理 profile 和角色配置，不会合并保留其中新增的 `[tui]` 等设置。检测到与安装记录不一致的修改时会拒绝覆盖；若额外设置已被纳入安装记录，后续重新生成仍可能将其移除。更新前请另行备份需要保留的内容；遇到冲突应先核对差异，不要通过删除 manifest 绕过保护。安装器成功更新已有文件时也会在 `.task-router/backups/` 留存备份。直接恢复额外设置会使生成文件再次偏离安装记录，下次更新仍可能需要处理冲突。
+
+避免手工修改生成文件来调整模型，应修改源 `routing.toml`。已安装后不要直接重命名 profile；使用不同目标目录，否则安装器会拒绝留下旧托管文件。修改了基础 `config.toml` 的 `developer_instructions` 后，需要重跑 `install --apply` 刷新 profile 中的快照（Codex CLI 0.159 的替换语义见上文，其他版本需自行确认）。
+
+### 停用
 
 不加载 profile 且不显式调用 Skill 时，入口要求维持原工作方式。全局安装的 Skill 仍可被宿主发现；停用 profile 不会删除安装文件。当前没有自动卸载命令，删除时应只移除本项目文件和 AGENTS.md 中 `codex-task-router:start/end` 标记之间的区块，保留用户其余内容。
 
