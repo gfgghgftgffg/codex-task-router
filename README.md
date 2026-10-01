@@ -1,10 +1,10 @@
 # Codex Task Router
 
-为 Codex 原生 subagents 配置任务分工、模型和思考强度。一个 `routing.toml` 管理全部角色，生成独立 profile、角色配置、精简的全局 AGENTS.md 入口和按需加载的 Skill。
+为 Codex 原生 subagents 配置任务分工、模型和思考强度。一个 `routing.toml` 管理全部角色及其候选模型，生成独立 profile、原生角色配置、精简的全局 AGENTS.md 入口和按需加载的 Skill。
 
-默认由 Astra 主 Agent 把握方向，DeepSeek Flash 编码，Sol 检索、独立验证和处理非编码产出。模型都是可替换的配置值，不与某个服务商绑定。
+每个角色有一个默认候选，也可以在同一角色的 `options` 内联数组中逐行添加候选模型；主 Agent 按任务复杂度、风险、上下文量和经济性选择，而不是所有任务都默认最强模型。模型都是可替换的配置值，不与某个服务商绑定。
 
-**状态：23 项自动测试通过；本机已验证原生 V1 下的 DeepSeek 任务收发、编码和独立 Sol 验证流程。** 质量、成本收益和不同宿主上的一致性尚未做基准测试。本项目提供编排政策和配置生成器，不提供模型服务，也不声称硬性拦截所有工具调用。
+**状态：40 项自动测试通过；13 候选配置的 native 解析与角色发现通过，未做模型实际派发或收益测评。** 模型质量、成本收益和不同宿主上的一致性尚未做基准测试。本项目提供编排政策和配置生成器，不提供模型服务，也不声称硬性拦截所有工具调用；并行执行使用 Codex 宿主原生能力，不提供自建调度器或常驻进程。
 
 ## 必需配置：使用 V1 子 Agent 通讯
 
@@ -69,39 +69,65 @@ codex -p task-routing
 
 ## 配置模型和思考强度
 
-所有设置都在 [`routing.toml`](routing.toml)。例如：
+所有设置都在 [`routing.toml`](routing.toml)。每个 `[roles.X]` 都必须有 `model` 和 `effort`，它们构成该角色的默认候选；可选的 `when` 是该候选的选择提示。需要多个候选时添加 `options` 内联表数组，每个候选占一行；数组可以包含任意多项：
 
 ```toml
 [roles.coding]
 model = "deepseek-flash"
-effort = "low"
-
-[roles.search]
-model = "gpt-6-sol"
-effort = "medium"
+effort = "max"
+options = [
+  { model = "deepseek-flash", effort = "high", when = "低风险机械修改" },
+  { model = "gpt-6.1-sol", effort = "high", when = "复杂、高风险或跨模块修改" }
+]
 ```
 
-| 配置项 | 默认模型 / 思考强度 | 职责 |
+- `options[*].id` 可以省略。省略时根据 `model`、`effort` 和显式 `provider`（未设置时使用固定占位值）生成 `auto_<16位小写十六进制>`；ID 安全、确定、字母开头且不超过 32 字符。重排候选、修改 `when`、或安装到另一台机器不会改变已有 ID；修改 `model`、`effort` 或 `provider` 会生成新 ID。
+- 也可以显式写 `id` 保留既有命名。显式 ID 仍须是小写安全标识（字母开头，只含小写字母、数字、`_`、`-`），不能是 `default`，同一角色内不能重复；显式与自动 ID 碰撞，或同一 `model/effort/provider` 组合出现多个无 ID 候选时，会给出明确错误。
+- `[[roles.X.options]]` 表头写法仍然支持；每个同名表头继续追加到同一个 `options` 数组，不是重复定义角色。它与上面的内联数组解析等价。
+- 同一角色的所有候选共享该角色的职责契约和 sandbox，不能通过候选扩权限。`when` 只是给主 Agent 的选择提示，不改变模型、强度或权限。
+- 默认候选生成 `tr_<role>` 和 `agents/task-routing/<role>.toml`；候选生成 `tr_<role>_<id>` 和 `agents/task-routing/<role>_<id>.toml`。旧的无 `options` 配置保持不变，仍只生成各逻辑角色的默认文件。
+
+| 配置项 | 默认候选 | 职责 |
 | --- | --- | --- |
 | `orchestrator` | `gpt-6-astra` / `medium` | 主 Agent：目标、方向、关键决策、整合 |
 | `roles.coding` | `deepseek-flash` / `max` | 有明确边界的编码、测试代码和重构 |
-| `roles.search` | `gpt-6-sol` / `high` | 只读检索、代码探索、资料核实 |
-| `roles.verify` | `gpt-6-sol` / `medium` | 独立验收、运行检查，不修改业务代码或测试源码 |
+| `roles.search` | `gpt-6.1-sol` / `high` | 只读检索、代码探索、资料核实 |
+| `roles.verify` | `gpt-6.1-sol` / `medium` | 独立验收、运行检查，不修改业务代码或测试源码 |
 | `roles.reasoning` | `gpt-6-astra` / `xhigh` | 按需的复杂判断、独立高风险审查 |
-| `roles.general` | `gpt-6-sol` / `medium` | 较大的非编码分析、总结、写作、结构化产出 |
+| `roles.general` | `gpt-6.1-sol` / `medium` | 较大的非编码分析、总结、写作、结构化产出 |
 
-每项还可设置 `provider = "已配置的-provider-id"`，省略时继承主会话 provider。认证和服务地址保留在原有 Codex 配置中；本项目不保存 API 密钥。
+样例配置提供 13 个候选（5 个默认候选和 8 个可选候选），可选候选不写 ID，由上述规则生成；`when` 是编排判断依据。本项目没有做过价格或收益基准测试。
 
-- 思考强度默认按配置固定，不会根据难度自动升档。`doctor` 根据有效模型目录检查支持的档位；没有目录时会明确提示未验证。不同 provider 的同名模型也可能支持不同档位。
+### search 与 verify 的任务性质分级
+
+只读是权限边界，不是难度信号；联网也不是自动升档的理由，局部代码同样可能很复杂。search 按“定位 / 有限理解 / 开放研究”区分档位，verify 按语义风险与所需证据区分，不按 diff 行数或文件数量机械选择。复杂点主要在需求或证据判断时，父 Agent 先明确 scope，必要时再切换到已授权候选。
+
+| 角色 | 候选 | 适用工作 |
+| --- | --- | --- |
+| search | `deepseek-flash` / `high` | 精确文件、符号或文本匹配与有限范围的局部仓库导航；返回路径、行号、原文和简短事实性描述，不做跨模块因果分析或多源综合 |
+| search | `gpt-6.1-sol` / `medium` | 有明确问题的调用链或数据流跟踪；针对单一主题的官方文档定向查证 |
+| search | `gpt-6.1-sol` / `high`（默认） | 开放问题、多轮联网研究、多来源比较、冲突核查、证据覆盖等需要判断的研究；并非所有联网任务 |
+| verify | `deepseek-flash` / `high` | 在明确、可直接检查的标准下独立检查机械修改；排除影响行为、权限、并发或数据完整性的更改 |
+| verify | `gpt-6.1-sol` / `medium`（默认） | 按原验收标准验证常规行为变更、相关测试与回归检查 |
+| verify | `gpt-6.1-sol` / `high` | 权限/安全、并发、数据一致性、跨组件集成或测试充分性等高风险细微行为 |
+
+verify 仍在独立于 coding 的上下文中给出 PASS/FAIL/INCOMPLETE；不因 diff 小自动选 low，也不额外强制 Astra 审查。
+
+每项还可设置 `provider = "已配置的-provider-id"`，省略时继承主会话 provider；候选的 provider 只作用于该候选。认证和服务地址保留在原有 Codex 配置中；本项目不保存 API 密钥。
+
+- 角色 map 列出所有候选的命名角色、模型、强度、provider 和 `when`，并说明主 Agent 按复杂度、风险、上下文和经济性选择，而不是所有任务默认最强。
+- 用户明确指定的模型或强度优先；有匹配候选时优先用对应命名角色。宿主不支持该覆盖时应明确报告，不能静默换模型。
+- 动态选择发生在父 Agent 的 spawn 决策里。生成器不自动分类任务，也不在运行时拦截模型调用。
+- 每个候选的 model/effort 都是固定配置；主 Agent 可以按任务难度选择更高或更低的已配置候选，但不能自行拼出配置以外的模型/强度组合。用户显式指定的模型或强度仍然优先。`doctor` 根据有效模型目录逐个检查所有候选（包括非默认候选）的模型、强度和 provider；没有目录时会明确提示未验证。不同 provider 的同名模型也可能支持不同档位。
 - `max_concurrent` 默认 30，只是并发上限，不要求每次创建 30 个子 Agent。
-- `max_coding_repairs` 默认 5，限制首次实现之后的编码修复跟进；耗尽后交回主 Agent 判断，不静默改用 GPT 编码。
-- 当前角色集合固定，但每个角色的模型、强度、provider 均可修改。新增角色需要扩展生成器和角色契约。
+- `max_coding_repairs` 默认 5，限制首次实现之后的编码修复跟进；耗尽后交回主 Agent 判断，不静默改用其它编码模型。
+- 逻辑角色由生成器定义为 coding/search/verify/reasoning/general；每个角色的候选可自由增删。新增逻辑角色需要扩展生成器和角色契约。
 
 ### 仅本次任务指定模型
 
-例如“这次总结用 Astra high”：仍可交给 general，但用该任务明确指定的模型和强度；其他角色维持默认配置，不改写 `routing.toml`。只更换主模型，不会自动改变所有子模型。
+例如“这次用 Sol 高强度验证”：先在角色 map 中按模型、强度、provider 和 `when` 查找匹配候选；存在就直接使用该命名候选，没有匹配候选时再走显式覆盖。其他角色维持默认配置，不改写 `routing.toml`。只更换主模型，不会自动改变所有子模型。
 
-这是明确的编排规则，实际执行依赖宿主是否允许每次 spawn 覆盖模型和强度。如果不能保留角色权限或不能调用指定模型，应报告限制，不能假装覆盖成功或静默使用默认值。当前没有独立的运行时拦截器来强制这一行为。
+这是明确的编排规则，实际执行依赖宿主是否允许指明命名角色或按次 spawn 覆盖模型和强度。命名角色不可用、候选不匹配、或无法保留角色权限时，应报告限制，不能假装覆盖成功或静默替换模型。当前没有独立的运行时拦截器来强制这一行为。
 
 ### 政策和强制执行
 
@@ -123,6 +149,8 @@ effort = "medium"
 
 search 保持只读，通过链接、现有文件或分批回传原文交接。编码后的独立验证保留，但不强制全量测试或额外 Astra 审查；同类小修改可以合并处理。详见 [Skill](skill/SKILL.md)、[研究证据规则](skill/references/research-evidence.md) 和 [编码验证规则](skill/references/coding-quality.md)。
 
+主 Agent 在派发前按候选的 `when`、任务风险、上下文量和经济性选择默认或命名候选；用户明确指定的模型/强度优先。同一角色的所有候选共享职责契约和 sandbox。并行执行使用 Codex 宿主原生的并行子 Agent 和 worktree 能力，本项目不提供调度器、常驻进程或任务队列；同一共享 checkout 内每个文件只保留一个写入者，隔离 worktree 可以各自写入，由父 Agent 负责整合。详见 [并行工作参考](skill/references/parallel-work.md)。
+
 ## 全局安装会修改什么
 
 目标默认为 `CODEX_HOME`；未设置时使用用户目录下的 `.codex`。也可通过 `--codex-home <目录>` 指定安装位置。
@@ -130,13 +158,15 @@ search 保持只读，通过链接、现有文件或分批回传原文交接。�
 | 路径，相对于目标目录 | 安装行为 |
 | --- | --- |
 | `task-routing.config.toml` | 新增或更新独立 profile |
-| `agents/task-routing/*.toml` | 新增或更新本项目的 5 个角色配置 |
+| `agents/task-routing/*.toml` | 新增或更新默认候选和命名候选的角色配置；删除已记录的过时候选时显示 `DELETE` |
 | `skills/task-routing/` | 新增或更新本项目的 Skill、角色契约和参考文件 |
 | `AGENTS.md` | 不存在则创建；存在则追加或更新带标记的路由区块 |
 | `.task-router/manifest.json` | 记录本项目托管文件，用于检查后续更新 |
 | `.task-router/backups/` | 更新已有文件前保存备份 |
 
 已有 `config.toml`、认证、其他 Skills、其他角色文件和 AGENTS.md 标记之外的内容不会被改写。安装只读取 `config.toml` 中的 `developer_instructions` 作为快照来源，不改写该文件。文件冲突或手工改过的托管角色会阻止覆盖；AGENTS.md 的本项目区块会随生成器更新，因此持久自定义规则应放在区块外。
+
+删除 `options` 中某个候选后，下一次 `install` 预览会把对应 `agents/task-routing/<role>_<id>.toml` 显示为 `DELETE`；自动 ID 也可能因 `model`、`effort` 或 `provider` 改变而更换路径，旧路径走同一套安全删除流程。安装器只删除安装记录中存在、hash 未被修改、且属于本项目已知角色候选命名空间的文件；手工改过的候选会阻止安装并保留原文件，默认角色文件、profile 改名等其他过期路径仍按原规则拒绝。删除前会备份到 `.task-router/backups/`，应用失败会回滚，重复安装是幂等的。
 
 安装器保留现有指令文本，但不会替用户分析或修复其中的语义冲突。已有“全部自行完成”“每阶段必须确认”等旧规则可能与路由政策冲突，需要单独审查。AGENTS.override.md 或其他宿主配置也可能影响入口加载。
 
@@ -206,11 +236,11 @@ npm run build
 | `routing.toml` | 用户可修改的默认角色配置 |
 | `roles/*.md` | 子 Agent 的职责和交付契约 |
 | `skill/` | 编排入口及按需加载的参考文件 |
-| `src/router.mjs` | 配置校验、激活说明与 profile 生成、base 快照、安装保护；全局 AGENTS.md 的生成来源 |
+| `src/router.mjs` | 配置与候选校验、激活说明与 profile 生成、base 快照、安装保护与失效候选安全删除；全局 AGENTS.md 的生成来源 |
 | `cli.mjs` | build、doctor、install 命令 |
-| `test/` | 配置映射、引用完整性、base 快照刷新、失效计划拒绝、安装预览、更新、备份与路径保护测试 |
+| `test/` | 配置映射、候选生成、provider 映射、逐候选目录校验、失效计划与候选删除保护、base 快照、安装预览、更新、备份与路径保护测试 |
 
-现有验证包含 23 项自动测试（配置生成、自定义 profile 名、base 快照、失效计划拒绝、安装保护、路径保护、CLI 预览与构建）、原生配置解析及角色发现启动检查，以及本机 Codex CLI 0.159 下的 V1 任务收发、DeepSeek 编码和独立 Sol 验证。模型质量、成本收益及不同宿主上的调度一致性尚未做基准测试。
+现有自动测试覆盖配置生成、候选解析与生成、provider 映射、doctor 逐候选目录校验、无效配置、自动 ID 稳定性与碰撞拒绝、显式 ID 兼容迁移、失效候选删除、手工修改保护、路径保护、CLI 预览与构建（40 项）。13 候选配置的 native 解析与角色发现通过。未做模型实际派发或收益测评，模型质量和不同宿主上的调度一致性也尚未做基准测试。候选删除属于本地安装器的预览、备份、拒绝和回滚行为；自动测试覆盖预览、备份和拒绝路径。
 
 ## 发布与参考
 

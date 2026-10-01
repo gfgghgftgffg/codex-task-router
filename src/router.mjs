@@ -52,12 +52,63 @@ function fields(value, allowed, label) {
   for (const key of Object.keys(value)) assert(allowed.includes(key), `${label}: unknown setting '${key}'`);
 }
 
-function modelConfig(value, label) {
-  fields(value, ['model', 'effort', 'provider'], label);
+const OPTION_ID = /^[a-z][a-z0-9_-]{0,31}$/;
+const AUTO_ID_PROVIDER = '<inherited>';
+
+function modelFields(value, label) {
   for (const key of ['model', 'effort']) {
     assert(typeof value[key] === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/+-]*$/.test(value[key]), `${label}.${key}: expected a non-empty model/effort identifier`);
   }
   if (value.provider !== undefined) assert(typeof value.provider === 'string' && /^[a-zA-Z0-9_-]+$/.test(value.provider), `${label}.provider: invalid provider ID`);
+}
+
+function whenField(value, label) {
+  if (value.when === undefined) return;
+  assert(typeof value.when === 'string' && value.when.trim() !== '' && !/[\r\n]/.test(value.when), `${label}.when: expected a non-empty single-line selection hint`);
+}
+
+function modelConfig(value, label) {
+  fields(value, ['model', 'effort', 'provider'], label);
+  modelFields(value, label);
+}
+
+function resolveRoleCandidates(value, label) {
+  fields(value, ['model', 'effort', 'provider', 'when', 'options'], label);
+  modelFields(value, label);
+  whenField(value, label);
+  const candidates = [{ id: 'default', model: value.model, effort: value.effort, provider: value.provider, when: value.when }];
+  if (value.options === undefined) return candidates;
+  assert(Array.isArray(value.options), `${label}.options: expected an array of tables`);
+  const seen = new Map();
+  const tuples = new Map();
+  value.options.forEach((option, index) => {
+    const optionLabel = `${label}.options[${index}]`;
+    fields(option, ['id', 'model', 'effort', 'provider', 'when'], optionLabel);
+    modelFields(option, optionLabel);
+    whenField(option, optionLabel);
+    if (option.id !== undefined) {
+      assert(typeof option.id === 'string' && OPTION_ID.test(option.id), `${optionLabel}.id: expected a lowercase identifier starting with a letter`);
+      assert(option.id !== 'default', `${optionLabel}.id: 'default' is reserved for the role's base candidate`);
+    }
+    const tuple = JSON.stringify([option.model, option.effort, option.provider ?? AUTO_ID_PROVIDER]);
+    if (option.id === undefined && tuples.has(tuple)) {
+      throw new Error(`${optionLabel}.id: duplicate option model/effort/provider tuple from ${tuples.get(tuple)}; give one candidate an explicit id`);
+    }
+    const id = option.id ?? `auto_${hash(tuple).slice(0, 16)}`;
+    if (seen.has(id)) {
+      const previous = seen.get(id);
+      if (option.id !== undefined && previous.explicit) throw new Error(`${optionLabel}.id: duplicate option id '${id}'`);
+      throw new Error(`${optionLabel}.id: collides with ${previous.explicit ? 'explicit' : 'automatic'} candidate id '${id}' from ${previous.label}`);
+    }
+    if (option.id === undefined) tuples.set(tuple, optionLabel);
+    seen.set(id, { label: optionLabel, explicit: option.id !== undefined });
+    candidates.push({ id, model: option.model, effort: option.effort, provider: option.provider, when: option.when });
+  });
+  return candidates;
+}
+
+function roleConfig(value, label) {
+  resolveRoleCandidates(value, label);
 }
 
 export function loadConfig(filename) {
@@ -69,8 +120,18 @@ export function loadConfig(filename) {
   assert(Number.isInteger(c.max_coding_repairs) && c.max_coding_repairs >= 0 && c.max_coding_repairs <= 5, 'max_coding_repairs must be 0..5');
   modelConfig(c.orchestrator, 'orchestrator');
   fields(c.roles, Object.keys(ROLE_META), 'roles');
-  for (const role of Object.keys(ROLE_META)) modelConfig(c.roles[role], `roles.${role}`);
+  for (const role of Object.keys(ROLE_META)) roleConfig(c.roles[role], `roles.${role}`);
   return c;
+}
+
+export function getRoleChoices(c) {
+  const choices = [];
+  for (const role of Object.keys(ROLE_META)) {
+    for (const candidate of resolveRoleCandidates(c.roles[role], `roles.${role}`)) {
+      choices.push({ role, ...candidate, nativeRole: candidate.id === 'default' ? `tr_${role}` : `tr_${role}_${candidate.id}` });
+    }
+  }
+  return choices;
 }
 
 function nativeModel(settings) {
@@ -85,6 +146,7 @@ export function render(c, options = {}) {
   const files = new Map();
   const activation = activationInstructions(c.profile);
   const base = typeof options.baseInstructions === 'string' ? options.baseInstructions : '';
+  const choices = getRoleChoices(c);
   const profile = {
     ...nativeModel(c.orchestrator),
     developer_instructions: base ? base + (base.endsWith('\n') ? '\n' : '\n\n') + activation : activation,
@@ -97,25 +159,27 @@ export function render(c, options = {}) {
   };
   const rows = [];
   for (const [role, meta] of Object.entries(ROLE_META)) {
-    const settings = c.roles[role];
     const contract = read(path.join(ROOT, 'roles', `${role}.md`));
-    const nativePath = `agents/task-routing/${role}.toml`;
-    profile.agents[`tr_${role}`] = { description: meta.description, config_file: nativePath };
-    files.set(nativePath, stringify({ name: `tr_${role}`, description: meta.description, ...nativeModel(settings), sandbox_mode: meta.sandbox, developer_instructions: contract }));
+    for (const choice of choices.filter(choice => choice.role === role)) {
+      const nativePath = `agents/task-routing/${choice.id === 'default' ? role : `${role}_${choice.id}`}.toml`;
+      profile.agents[choice.nativeRole] = { description: meta.description, config_file: nativePath };
+      files.set(nativePath, stringify({ name: choice.nativeRole, description: meta.description, ...nativeModel(choice), sandbox_mode: meta.sandbox, developer_instructions: contract }));
+      rows.push(`| ${choice.id === 'default' ? role : `${role} (${choice.id})`} | ${choice.nativeRole} | ${choice.model} | ${choice.effort} | ${choice.provider || 'inherit active provider'} | ${choice.when ? choice.when.replace(/\|/g, '\\|') : '-'} | [contract](roles/${role}.md) |`);
+    }
     files.set(`skills/task-routing/references/roles/${role}.md`, contract);
-    rows.push(`| ${role} | tr_${role} | ${settings.model} | ${settings.effort} | ${settings.provider || 'inherit active provider'} | [contract](roles/${role}.md) |`);
   }
   files.set(`${c.profile}.config.toml`, '# Generated from routing.toml. Rebuild to change models or efforts.\n' + stringify(profile));
-  for (const relative of ['SKILL.md', 'references/coding-quality.md', 'references/research-evidence.md', 'agents/openai.yaml']) {
+  for (const relative of ['SKILL.md', 'references/coding-quality.md', 'references/parallel-work.md', 'references/research-evidence.md', 'agents/openai.yaml']) {
     files.set(`skills/task-routing/${relative}`, read(path.join(ROOT, 'skill', relative)));
   }
   files.set('skills/task-routing/references/role-map.md', [
     '# Configured roles', '',
-    'Generated from routing.toml. These are defaults. An explicit user model or effort instruction overrides the corresponding default only within its stated task or role scope; other settings remain unchanged. Examples and a parent-model selection alone are not child overrides. Do not rewrite persistent configuration for a one-off request.', '',
+    'Generated from routing.toml. Each role has a base candidate and may have named candidates that share the same contract and sandbox. The orchestrator picks among the listed candidates by task complexity, risk, context volume, and economy instead of using the strongest candidate for every task. Selection happens in the parent at dispatch time; this generator neither classifies tasks nor intercepts runtime calls.', '',
+    'An explicit user model or effort instruction overrides the corresponding default only within its stated task or role scope; other settings remain unchanged. When a request matches a candidate, prefer its named role, and report an unsupported ad-hoc override instead of silently substituting another model. Examples and a parent-model selection alone are not child overrides. Do not rewrite persistent configuration for a one-off request.', '',
     `Parent profile: ${c.profile}; model: ${c.orchestrator.model}; effort: ${c.orchestrator.effort}.`,
     `Maximum concurrent children: ${c.max_concurrent}. Maximum coding repair follow-ups per work unit: ${c.max_coding_repairs}.`, '',
-    '| Work | Native role | Model | Effort | Provider | Instructions |',
-    '| --- | --- | --- | --- | --- | --- |', ...rows, '',
+    '| Work | Native role | Model | Effort | Provider | When | Instructions |',
+    '| --- | --- | --- | --- | --- | --- | --- |', ...rows, '',
     'Named roles carry their provider, sandbox, and instructions. A model-only spawn is not equivalent when it cannot preserve these settings.',
     'Use supported per-spawn model/effort overrides for explicit user choices. If named roles are unavailable, read the selected contract and explicitly select the effective model and effort only when the host can enforce the required provider and permissions. Use fork_turns="none" or fork_context=false only if that parameter exists in the exposed tool schema.',
     'If the effective model, effort, or role is rejected, report the exact route and failure. Do not silently fall back to the default, fabricate success, use an unnamed inherited-model fork, or weaken permissions.', '',
@@ -123,6 +187,7 @@ export function render(c, options = {}) {
   files.set('AGENTS.md', [START,
     'When the task-routing profile is active or the user invokes $task-routing, use that skill for delegation. Otherwise keep the existing workflow.',
     'Its role map defines defaults. Explicit user model/effort instructions take precedence for their stated task or role scope without changing persistent settings. Preserve host permissions and project constraints; report unsupported choices instead of silently substituting models.',
+    'Choose among the role map candidates by task complexity, risk, context volume, and economy; do not use the strongest candidate for every task by default.',
     'The parent owns direction and decisions; assigned children follow their role without recursively orchestrating. Load only the role and workflow guidance needed for this task.',
     'Research summaries are navigation aids. Before important evidence-based decisions, the main agent reads the relevant originals and checks coverage; another child does not replace this judgment.',
     'Within the authorized task, continue through the requested deliverable and relevant acceptance checks, fixing failures caused by the change. Do not stop at a first draft or add routine approval checkpoints. Report concrete blockers and unverified requirements.',
@@ -143,19 +208,21 @@ export function inspectCatalog(c, codexHome, catalogOverride) {
     catalog = JSON.parse(read(catalogPath).replace(/^\uFEFF/, ''));
     assert(Array.isArray(catalog.models), 'Model catalog must contain a models array');
   } else warnings.push('No configured model catalog found; model availability and effort support are unverified.');
-  for (const [name, settings] of Object.entries({ orchestrator: c.orchestrator, ...c.roles })) {
-    const provider = settings.provider || c.orchestrator.provider || base.model_provider || 'openai';
+  const orchestrator = { role: 'orchestrator', id: 'default', nativeRole: 'orchestrator', model: c.orchestrator.model, effort: c.orchestrator.effort, provider: c.orchestrator.provider };
+  for (const candidate of [orchestrator, ...getRoleChoices(c)]) {
+    const label = candidate.role === 'orchestrator' ? 'orchestrator' : candidate.id === 'default' ? `roles.${candidate.role}` : `roles.${candidate.role}.options.${candidate.id}`;
+    const provider = candidate.provider || c.orchestrator.provider || base.model_provider || 'openai';
     if (provider !== 'openai' && provider !== 'ollama' && provider !== 'lmstudio' && !base.model_providers?.[provider]) {
-      errors.push(`${name}: provider '${provider}' is not defined in the existing Codex config`);
+      errors.push(`${label}: provider '${provider}' is not defined in the existing Codex config`);
     }
-    const model = catalog?.models.find(m => m.slug === settings.model);
-    if (catalog && !model) errors.push(`${name}: '${settings.model}' is absent from the configured model catalog`);
+    const model = catalog?.models.find(m => m.slug === candidate.model);
+    if (catalog && !model) errors.push(`${label}: '${candidate.model}' is absent from the configured model catalog`);
     if (model) {
       const efforts = (model.supported_reasoning_levels || []).map(v => typeof v === 'string' ? v : v.effort);
-      if (efforts.length && !efforts.includes(settings.effort)) errors.push(`${name}: effort '${settings.effort}' is unsupported; advertised: ${efforts.join(', ')}`);
-      if (!efforts.length) warnings.push(`${name}: catalog does not advertise reasoning levels`);
+      if (efforts.length && !efforts.includes(candidate.effort)) errors.push(`${label}: effort '${candidate.effort}' is unsupported; advertised: ${efforts.join(', ')}`);
+      if (!efforts.length) warnings.push(`${label}: catalog does not advertise reasoning levels`);
     }
-    rows.push({ role: name, model: settings.model, effort: settings.effort, provider });
+    rows.push({ role: candidate.role === 'orchestrator' ? 'orchestrator' : candidate.id === 'default' ? candidate.role : `${candidate.role}:${candidate.id}`, nativeRole: candidate.nativeRole, model: candidate.model, effort: candidate.effort, provider });
   }
   if (c.roles.search.provider && c.roles.search.provider !== (c.orchestrator.provider || base.model_provider || 'openai')) {
     warnings.push('Search uses another provider. Unnamed child defaults cannot select that provider; always use named roles.');
@@ -199,6 +266,8 @@ function writeAtomic(target, content) {
   }
 }
 
+const CANDIDATE_PATH = new RegExp(`^agents/task-routing/(?:${Object.keys(ROLE_META).join('|')})_[a-z][a-z0-9_-]*\\.toml$`);
+
 export function planInstall(files, home, options = {}) {
   const manifestPath = safeTarget(home, MANIFEST);
   const base = options.base ?? readBaseInstructions(home);
@@ -226,7 +295,22 @@ export function planInstall(files, home, options = {}) {
     if (old !== content) changes.push({ relative, target, content, old });
   }
   for (const relative of Object.keys(previous.files)) {
-    assert(files.has(relative), `Previously managed path would become stale: ${relative}. Keep the profile name stable or use a separate Codex home.`);
+    if (files.has(relative)) continue;
+    // Removing a named candidate is the one managed deletion this installer supports. It
+    // stays restricted to this project's role_<id>.toml namespace and to files whose
+    // recorded hash is unchanged, so base roles, edited files, and unowned paths are never
+    // removed.
+    assert(CANDIDATE_PATH.test(relative), `Previously managed path would become stale: ${relative}. Keep the profile name stable or use a separate Codex home.`);
+    const target = safeTarget(home, relative);
+    const old = fs.existsSync(target) ? read(target) : undefined;
+    if (old === undefined) {
+      // Guard the missing path too: a file recreated after planning must fail the apply.
+      guards.push({ target, old: undefined, label: 'Managed file' });
+      continue;
+    }
+    assert(hash(old) === previous.files[relative], `Preserving edited candidate file: ${target}`);
+    guards.push({ target, old, label: 'Managed file' });
+    changes.push({ relative, target, old, content: undefined });
   }
   const manifest = JSON.stringify({ version: 1, files: hashes }, null, 2) + '\n';
   const oldManifest = fs.existsSync(manifestPath) ? read(manifestPath) : undefined;
@@ -259,12 +343,15 @@ export function applyInstall(changes, home) {
         fs.writeFileSync(dest, change.old, { flag: 'wx', mode: 0o600 });
       }
       fs.mkdirSync(path.dirname(change.target), { recursive: true });
-      writeAtomic(change.target, change.content);
+      if (change.content === undefined) fs.unlinkSync(change.target);
+      else writeAtomic(change.target, change.content);
       applied.push(change);
     }
   } catch (error) {
     for (const change of applied.reverse()) {
-      if (change.old === undefined) fs.unlinkSync(change.target);
+      if (change.old === undefined) {
+        if (fs.existsSync(change.target)) fs.unlinkSync(change.target);
+      }
       else writeAtomic(change.target, change.old);
     }
     throw error;

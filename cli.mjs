@@ -46,7 +46,7 @@ try {
     const base = readBaseInstructions(home);
     const changes = planInstall(render(c, { baseInstructions: base.text }), home, { base });
     console.log(`Target: ${home}`);
-    for (const change of changes) console.log(`${change.old === undefined ? 'CREATE' : 'UPDATE'} ${change.relative}`);
+    for (const change of changes) console.log(`${change.content === undefined ? 'DELETE' : change.old === undefined ? 'CREATE' : 'UPDATE'} ${change.relative}`);
     if (!changes.length) console.log('Already up to date.');
     if (values.apply) {
       const result = applyInstall(changes, home);

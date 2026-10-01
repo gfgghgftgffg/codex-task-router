@@ -8,6 +8,16 @@ import { parse, stringify } from 'smol-toml';
 import { ROOT, ROLE_META, loadConfig, render, inspectCatalog, mergeAgents, planInstall, applyInstall, activationInstructions, readBaseInstructions } from '../src/router.mjs';
 
 const defaultConfig = () => loadConfig(path.join(ROOT, 'routing.toml'));
+// Older coverage describes the single-candidate layout. Keep it on an explicit
+// option-free fixture instead of inheriting whatever routing.toml ships.
+const legacyConfig = () => {
+  const c = defaultConfig();
+  for (const settings of Object.values(c.roles)) {
+    delete settings.options;
+    delete settings.when;
+  }
+  return c;
+};
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-router-test-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -25,7 +35,7 @@ function installPlan(c, home) {
 }
 
 test('all independently configured models, efforts and providers reach native role layers', () => {
-  const c = defaultConfig();
+  const c = legacyConfig();
   for (const [i, role] of Object.keys(ROLE_META).entries()) {
     c.roles[role] = { model: `custom/model-${i}`, effort: `level-${i}`, provider: `provider_${i}` };
   }
@@ -44,7 +54,7 @@ test('all independently configured models, efforts and providers reach native ro
 });
 
 test('changing the coding model leaves every other role configuration unchanged', () => {
-  const c = defaultConfig(), before = render(c);
+  const c = legacyConfig(), before = render(c);
   c.roles.coding.model = 'another-coder';
   c.roles.coding.effort = 'max';
   const after = render(c);
@@ -55,7 +65,7 @@ test('changing the coding model leaves every other role configuration unchanged'
 });
 
 test('role files are self-describing for discovery without a profile name hint', () => {
-  const files = render(defaultConfig());
+  const files = render(legacyConfig());
   const profile = parse([...files.entries()].find(([p]) => p.endsWith('.config.toml'))[1]);
   const names = new Set();
   for (const [registeredName, declaration] of Object.entries(profile.agents)) {
@@ -74,19 +84,19 @@ test('role files are self-describing for discovery without a profile name hint',
 test('configuration rejects misspelled roles, absent efforts and escaping profile names', t => {
   const dir = fixture(t);
   for (const mutate of [c => { c.roles.seach = c.roles.search; }, c => { delete c.roles.coding.effort; }, c => { c.profile = '../escape'; }]) {
-    const c = defaultConfig(); mutate(c);
+    const c = legacyConfig(); mutate(c);
     const filename = put(dir, 'routing.toml', stringify(c));
     assert.throws(() => loadConfig(filename));
   }
 });
 
 test('configuration accepts provider-specific effort labels without a hardcoded enum', t => {
-  const c = defaultConfig(); c.roles.coding.effort = 'adaptive';
+  const c = legacyConfig(); c.roles.coding.effort = 'adaptive';
   assert.equal(loadConfig(put(fixture(t), 'routing.toml', stringify(c))).roles.coding.effort, 'adaptive');
 });
 
 test('generated local skill references resolve inside the bundle', () => {
-  const files = render(defaultConfig());
+  const files = render(legacyConfig());
   for (const [relative, content] of files) {
     if (!relative.endsWith('.md')) continue;
     for (const match of content.matchAll(/\]\(([^)]+\.md)\)/g)) {
@@ -101,7 +111,7 @@ test('preview writes nothing and install preserves existing base config and AGEN
   const base = '# existing provider and private settings\nmodel = "previous"\n';
   put(dir, 'config.toml', base);
   put(dir, 'AGENTS.md', 'Existing project preferences.\n');
-  const files = render(defaultConfig());
+  const files = render(legacyConfig());
   const changes = planInstall(files, dir);
   assert.equal(fs.existsSync(path.join(dir, 'task-routing.config.toml')), false);
   applyInstall(changes, dir);
@@ -111,7 +121,7 @@ test('preview writes nothing and install preserves existing base config and AGEN
 });
 
 test('updating owned models makes a backup and preserves AGENTS additions', t => {
-  const dir = fixture(t), c = defaultConfig();
+  const dir = fixture(t), c = legacyConfig();
   c.roles.coding.effort = 'low';
   applyInstall(planInstall(render(c), dir), dir);
   fs.appendFileSync(path.join(dir, 'AGENTS.md'), '\nMy later instructions.\n');
@@ -125,7 +135,7 @@ test('updating owned models makes a backup and preserves AGENTS additions', t =>
 });
 
 test('unowned files and edited managed roles are refused before any writes', t => {
-  const dir = fixture(t), files = render(defaultConfig());
+  const dir = fixture(t), files = render(legacyConfig());
   put(dir, 'task-routing.config.toml', '# another profile\n');
   assert.throws(() => planInstall(files, dir), /unowned or edited/);
   assert.equal(fs.existsSync(path.join(dir, 'agents')), false);
@@ -136,7 +146,7 @@ test('unowned files and edited managed roles are refused before any writes', t =
 });
 
 test('a stale plan cannot overwrite concurrent changes', t => {
-  const dir = fixture(t), files = render(defaultConfig());
+  const dir = fixture(t), files = render(legacyConfig());
   const changes = planInstall(files, dir);
   put(dir, 'AGENTS.md', 'Written after preview.');
   assert.throws(() => applyInstall(changes, dir), /changed after planning/);
@@ -145,7 +155,7 @@ test('a stale plan cannot overwrite concurrent changes', t => {
 
 test('ambiguous AGENTS markers and stale profile renames fail explicitly', t => {
   assert.throws(() => mergeAgents('<!-- codex-task-router:start -->', 'x'), /ambiguous/);
-  const dir = fixture(t), c = defaultConfig();
+  const dir = fixture(t), c = legacyConfig();
   applyInstall(planInstall(render(c), dir), dir);
   c.profile = 'renamed';
   assert.throws(() => planInstall(render(c), dir), /stale/);
@@ -159,7 +169,7 @@ test('unsafe manifest paths are rejected without writing outside the target', t 
 test('directory links cannot redirect role installation', t => {
   const dir = fixture(t), other = fixture(t);
   fs.symlinkSync(other, path.join(dir, 'agents'), process.platform === 'win32' ? 'junction' : 'dir');
-  assert.throws(() => planInstall(render(defaultConfig()), dir), /symlink\/junction/);
+  assert.throws(() => planInstall(render(legacyConfig()), dir), /symlink\/junction/);
   assert.deepEqual(fs.readdirSync(other), []);
 });
 
@@ -168,7 +178,7 @@ test('links above or at the target root are allowed', t => {
   const alias = path.join(parent, 'alias');
   fs.symlinkSync(actual, alias, process.platform === 'win32' ? 'junction' : 'dir');
   const home = path.join(alias, 'home');
-  const result = applyInstall(planInstall(render(defaultConfig()), home), home);
+  const result = applyInstall(planInstall(render(legacyConfig()), home), home);
   assert.ok(result.written > 0);
   assert.ok(fs.existsSync(path.join(actual, 'home', 'agents/task-routing/coding.toml')));
   const rootResult = applyInstall(planInstall(new Map([['root-link-check', 'ok']]), alias), alias);
@@ -177,7 +187,7 @@ test('links above or at the target root are allowed', t => {
 });
 
 test('doctor catches unavailable models and unsupported reasoning before installation', t => {
-  const dir = fixture(t), c = defaultConfig();
+  const dir = fixture(t), c = legacyConfig();
   c.orchestrator = { model: 'gpt-6-astra', effort: 'medium' };
   c.roles.coding = { model: 'deepseek-flash', effort: 'low' };
   c.roles.search = c.roles.verify = c.roles.general = { model: 'gpt-6-sol', effort: 'medium' };
@@ -196,7 +206,7 @@ test('doctor catches unavailable models and unsupported reasoning before install
 });
 
 test('doctor resolves providers and rejects undefined ones without reading credentials', t => {
-  const dir = fixture(t), c = defaultConfig();
+  const dir = fixture(t), c = legacyConfig();
   put(dir, 'config.toml', 'model_provider = "gateway"\n[model_providers.gateway]\nname = "Gateway"\n');
   assert.equal(inspectCatalog(c, dir).rows[1].provider, 'gateway');
   c.roles.coding.provider = 'missing';
@@ -205,18 +215,19 @@ test('doctor resolves providers and rejects undefined ones without reading crede
 
 test('CLI build produces a parseable profile and CLI install defaults to preview', t => {
   const dir = fixture(t), out = path.join(dir, 'bundle'), home = path.join(dir, 'home');
-  const build = spawnSync(process.execPath, [path.join(ROOT, 'cli.mjs'), 'build', '--out', out], { encoding: 'utf8' });
+  const configPath = put(dir, 'legacy-routing.toml', stringify(legacyConfig()));
+  const build = spawnSync(process.execPath, [path.join(ROOT, 'cli.mjs'), 'build', '--config', configPath, '--out', out], { encoding: 'utf8' });
   assert.equal(build.status, 0, build.stderr);
   const profile = parse(fs.readFileSync(path.join(out, 'task-routing.config.toml'), 'utf8'));
   assert.equal(profile.model, 'gpt-6-astra');
-  const preview = spawnSync(process.execPath, [path.join(ROOT, 'cli.mjs'), 'install', '--codex-home', home], { encoding: 'utf8' });
+  const preview = spawnSync(process.execPath, [path.join(ROOT, 'cli.mjs'), 'install', '--config', configPath, '--codex-home', home], { encoding: 'utf8' });
   assert.equal(preview.status, 0, preview.stderr);
   assert.match(preview.stdout, /Preview only/);
   assert.equal(fs.existsSync(home), false);
 });
 
 test('activation lives only in the generated profile and follows custom profile names', t => {
-  const c = defaultConfig();
+  const c = legacyConfig();
   c.profile = 'team-routing';
   const files = render(c);
   const activation = activationInstructions('team-routing');
@@ -239,7 +250,7 @@ test('activation lives only in the generated profile and follows custom profile 
 });
 
 test('child role contracts stay byte-identical to the source and never carry the parent activation', () => {
-  const c = defaultConfig();
+  const c = legacyConfig();
   const plain = render(c), composed = render(c, { baseInstructions: 'Base developer text.' });
   const activation = activationInstructions(c.profile);
   for (const role of Object.keys(ROLE_META)) {
@@ -255,7 +266,7 @@ test('child role contracts stay byte-identical to the source and never carry the
 });
 
 test('install snapshots base developer instructions, preserves config.toml bytes and stays idempotent', t => {
-  const dir = fixture(t), c = defaultConfig();
+  const dir = fixture(t), c = legacyConfig();
   const baseText = '# provider settings stay untouched\nmodel = "previous"\ndeveloper_instructions = "Keep these base instructions."\n';
   put(dir, 'config.toml', baseText);
   const first = installPlan(c, dir);
@@ -270,7 +281,7 @@ test('install snapshots base developer instructions, preserves config.toml bytes
 });
 
 test('reinstall refreshes changed and removed base developer instructions', t => {
-  const dir = fixture(t), c = defaultConfig(), profilePath = path.join(dir, 'task-routing.config.toml');
+  const dir = fixture(t), c = legacyConfig(), profilePath = path.join(dir, 'task-routing.config.toml');
   const activation = activationInstructions(c.profile);
   const firstBase = '# keep this comment\nmodel = "previous"\ndeveloper_instructions = "First base text."\n';
   put(dir, 'config.toml', firstBase);
@@ -294,7 +305,7 @@ test('reinstall refreshes changed and removed base developer instructions', t =>
 });
 
 test('stale plans are rejected after base or managed file changes, even when nothing needs writing', t => {
-  const dir = fixture(t), c = defaultConfig(), activation = activationInstructions(c.profile);
+  const dir = fixture(t), c = legacyConfig(), activation = activationInstructions(c.profile);
   const baseLine = 'developer_instructions = "Base text."\n';
   put(dir, 'config.toml', baseLine);
   applyInstall(installPlan(c, dir).changes, dir);
@@ -322,13 +333,14 @@ test('stale plans are rejected after base or managed file changes, even when not
 
 test('portable build never carries base developer instructions while install snapshots them', t => {
   const dir = fixture(t), out = path.join(dir, 'bundle'), home = path.join(dir, 'home');
+  const configPath = put(dir, 'legacy-routing.toml', stringify(legacyConfig()));
   const baseText = 'developer_instructions = "Private base instructions."\n';
   put(home, 'config.toml', baseText);
-  const build = spawnSync(process.execPath, [path.join(ROOT, 'cli.mjs'), 'build', '--out', out], { encoding: 'utf8' });
+  const build = spawnSync(process.execPath, [path.join(ROOT, 'cli.mjs'), 'build', '--config', configPath, '--out', out], { encoding: 'utf8' });
   assert.equal(build.status, 0, build.stderr);
   const bundleProfile = parse(fs.readFileSync(path.join(out, 'task-routing.config.toml'), 'utf8'));
   assert.equal(bundleProfile.developer_instructions, activationInstructions('task-routing'));
-  const install = spawnSync(process.execPath, [path.join(ROOT, 'cli.mjs'), 'install', '--codex-home', home, '--apply'], { encoding: 'utf8' });
+  const install = spawnSync(process.execPath, [path.join(ROOT, 'cli.mjs'), 'install', '--config', configPath, '--codex-home', home, '--apply'], { encoding: 'utf8' });
   assert.equal(install.status, 0, install.stderr);
   const installed = parse(fs.readFileSync(path.join(home, 'task-routing.config.toml'), 'utf8')).developer_instructions;
   assert.equal(installed, `Private base instructions.\n\n${activationInstructions('task-routing')}`);
