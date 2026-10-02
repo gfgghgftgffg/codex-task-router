@@ -50,6 +50,14 @@ provider 可在 `orchestrator`、角色默认候选或单个 `options` 项上设
 
 并发上限不要求每次创建相应数量的子 Agent。修复次数耗尽后交回主 Agent 判断。完整选择提示见 [`routing.toml`](../routing.toml)，职责和工作流程见 [Skill](../skill/SKILL.md)。
 
+## Agent 续聊与上下文
+
+相关任务优先在原 Agent 中续聊；正常提交、修复或可核对的增量基线变化无需重开。旧上下文无关、难以局部更新或噪声过大时再新建。独立任务仍可并行。实现与验收保持独立上下文；同一补丁的复验可继续原 verifier，沿用原验收标准和配置的修复上限。
+
+独立新任务使用 fresh 上下文并给足必要说明；父会话大部分历史相关，且宿主能保留所选角色、模型、provider 和权限时，才按需 fork。当前 `fork_context=true` 只复制父会话快照，不共享兄弟 Agent 的完整上下文，也不持续同步。已关闭 Agent 仅在宿主支持且能恢复原上下文时续聊，恢复失败则说明并新建；不保证跨父会话或重启恢复，也不能靠 prompt 或 resume 强行更换候选设置。
+
+共享资料优先使用现有 README、模块文档和源码索引，缺少导航时才补充注明版本和适用范围的短索引；事实过期时回查原文。会话复用不保证缓存命中或节省 token。详见 [并行工作规则](../skill/references/parallel-work.md) 与 [编码验收契约](../skill/references/coding-quality.md)。
+
 ## CLI 参数
 
 | 参数 | 适用命令 | 行为 |

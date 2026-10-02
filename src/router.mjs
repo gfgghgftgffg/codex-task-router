@@ -181,7 +181,8 @@ export function render(c, options = {}) {
     '| Work | Native role | Model | Effort | Provider | When | Instructions |',
     '| --- | --- | --- | --- | --- | --- | --- |', ...rows, '',
     'Named roles carry their provider, sandbox, and instructions. A model-only spawn is not equivalent when it cannot preserve these settings.',
-    'Use supported per-spawn model/effort overrides for explicit user choices. If named roles are unavailable, read the selected contract and explicitly select the effective model and effort only when the host can enforce the required provider and permissions. Use fork_turns="none" or fork_context=false only if that parameter exists in the exposed tool schema.',
+    'Use supported per-spawn model/effort overrides for explicit user choices. If named roles are unavailable, read the selected contract and explicitly select the effective model and effort only when the host can enforce the required provider and permissions.',
+    'Continue related work with a suitable owner through its known ID using send_input. Independent new tasks start fresh; fork only when most parent history is relevant and the host preserves the selected role, model/effort, provider, and permissions. Follow [the context, isolation, and lifecycle rules](parallel-work.md) for dispatch checks, resume limits, and sharing.',
     'If the effective model, effort, or role is rejected, report the exact route and failure. Do not silently fall back to the default, fabricate success, use an unnamed inherited-model fork, or weaken permissions.', '',
   ].join('\n'));
   files.set('AGENTS.md', [START,
